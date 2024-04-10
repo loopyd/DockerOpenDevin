@@ -1,0 +1,3 @@
+[submodule "docker/OpenDevin/src"]
+	path = docker/OpenDevin/src
+	url = https://github.com/OpenDevin/OpenDevin.git
