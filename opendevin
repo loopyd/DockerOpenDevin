@@ -709,7 +709,7 @@ function usage() {
         echo -e "  ${C_BOLD_WHITE}Action (required)${C_RESET}"
         echo ""
         echo "    gen           Manage the opendevin stack"
-        echo "    manager       Manage the opendevin manager stack"
+        echo "    manager       Manage the Docker Manager stack"
         echo ""
         ;;
     esac
