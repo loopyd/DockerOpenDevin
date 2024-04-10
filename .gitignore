@@ -1,0 +1,4 @@
+docker/data/*.*
+!docker/data/.gitkeep
+!docker/data/opendevin/.gitkeep
+!docker/data/opendevin/workspace/.gitkeep

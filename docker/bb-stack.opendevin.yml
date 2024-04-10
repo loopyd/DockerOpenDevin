@@ -1,0 +1,38 @@
+version: '3'
+
+services:
+  opendevin:
+    ports:
+      - 8080:8080
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: 4.0
+          memory: 2G  
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: volume
+        source: opendevin_data
+        target: /data
+    networks:
+      - opendevin_net
+    labels:
+      - com.docker.stack.namespace=$STACK_NAME
+    image: localhost:5050/opendevin:latest
+
+volumes:
+  opendevin_data:
+    driver: local
+    options:
+      type: none
+      device: ../data/opendevin
+      o: bind
+
+networks:
+  opendevin_net:
+    driver: overlay
+    external: true
+    name: opendevin_net

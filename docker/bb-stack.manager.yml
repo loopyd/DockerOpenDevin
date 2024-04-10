@@ -1,0 +1,49 @@
+version: '3'
+
+services:
+  portainer:
+    ports:
+      - 9000:9000
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: volume
+        source: portainer_data
+        target: /data
+    networks:
+      - docker_manager
+    labels:
+      - com.docker.stack.namespace=docker_manager
+    image: portainer/portainer
+
+  registry:
+    ports:
+      - 5000:5000
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+    networks:
+      - docker_manager
+    labels:
+      - com.docker.stack.namespace=docker_managers
+    image: docker.io/registry:2
+
+networks:
+  docker_manager:
+    driver: overlay
+    external: true
+    name: docker_manager
+
+volumes:
+  portainer_data:
+    driver: local

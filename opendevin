@@ -1,0 +1,1044 @@
+#!/bin/bash
+
+#!/usr/bin/env bash
+
+shopt -s extglob
+set -Eeo pipefail
+
+# Set global variables
+DEBUG=${DEBUG:-false}
+ACTION=${ACTION:-}
+SUBACTION=${SUBACTION:-}
+WORKDIR=${WORKDIR:-./workdir}
+LANG=${LANG:-}
+TIMEZONE=${TIMEZONE:-}
+GOSU_VERSION=${GOSU_VERSION:-}
+NODE_VERSION=${NODE_VERSION:-}
+NVM_VERSION=${NVM_VERSION:-}
+YARN_VERSION=${YARN_VERSION:-}
+PYTHON_VERSION=${PYTHON_VERSION:-}
+BARGS=""
+# CSCRIPT=$(readlink -f "$0")
+CSCRIPT_DIR=$(dirname "$0")
+# shellcheck disable=SC2206
+# CARGS=($*)
+
+# Function to print a debug message
+function debug() {
+    local C_WHITE="\033[0;37m"
+    local C_BOLD_WHITE="\033[1;37m"
+    local C_RESET="\033[0m"
+    echo -e "${C_BOLD_WHITE}DEBUG: ${C_RESET}${C_WHITE}$1${C_RESET}" >&2
+}
+
+# function to print a warning message
+function warn() {
+    local C_YELLOW="\033[0;33m"
+    local C_BOLD_YELLOW="\033[1;33m"
+    local C_RESET="\033[0m"
+    echo -e "${C_BOLD_YELLOW}WARNING: ${C_RESET}${C_YELLOW}$1${C_RESET}" >&2
+}
+
+# function to print an error message
+function err() {
+    local C_RED="\033[0;31m"
+    local C_BOLD_RED="\033[1;31m"
+    local C_RESET="\033[0m"
+    echo -e "${C_BOLD_RED}ERROR: ${C_RESET}${C_RED}$1${C_RESET}" >&2
+}
+
+# Function to print an info message
+function info() {
+    local C_BLUE="\033[0;34m"
+    local C_BOLD_BLUE="\033[1;34m"
+    local C_RESET="\033[0m"
+    echo -e "${C_BOLD_BLUE}INFO: ${C_RESET}${C_BLUE}$1${C_RESET}"
+}
+
+# Function to print a success message
+function success() {
+    local C_GREEN="\033[0;32m"
+    local C_BOLD_GREEN="\033[1;32m"
+    local C_RESET="\033[0m"
+    echo -e "${C_BOLD_GREEN}SUCCESS: ${C_RESET}${C_GREEN}$1${C_RESET}"
+}
+
+function _exit_trap() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        err "Error: Process exited with status code: $exit_code"
+    fi
+    unset BUILDKIT_PROGRESS
+    cd "$CSCRIPT_DIR"
+    exit $exit_code
+}
+
+trap _exit_trap EXIT SIGINT SIGTERM ERR
+
+function __run() {
+    debug "Running command: $*"
+    eval "$*" || {
+        return $?
+    }
+}
+
+function __safe_rmdir() {
+    local DIR="$1"
+    if [ -d "$DIR" ]; then
+        sudo rm -rfv "$DIR" || {
+            sudo chown -R $(whoami) "$DIR"
+            sudo chmod -R u+rww "$DIR"
+            sudo rm -rfv "$DIR" || {
+                echo "Failed to remove directory $DIR"
+                return 1
+            }
+        }
+    else
+        echo "Directory $DIR does not exist"
+        return 0
+    fi
+}
+
+# This function checks if a Docker Swarm mode is initialized on this host.
+function __is_docker_swarm_initialized() {
+    if [ "$(docker info --format '{{.Swarm.LocalNodeState}}')" == "inactive" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This fnction checks if a docker network exists
+function __docker_network_exists() {
+    local NETWORK_NAME="$1"
+    if [ -z "$NETWORK_NAME" ]; then
+        err "NETWORK_NAME is required"
+        return 1
+    fi
+    local NODE_ID
+    NODE_ID=$(docker info --format '{{.Swarm.NodeID}}')
+    if [ -z "$NODE_ID" ]; then
+        return 1
+    fi
+    local NETWORK_ID
+    NETWORK_ID=$(docker network ls -q --filter name="$NETWORK_NAME" --format="{{.Name}}" | tr -d '\n')
+    if [ "$NETWORK_ID" != "$NETWORK_NAME" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This function checks if a docker container exists
+function __docker_container_exists() {
+    local CONTAINER_NAME="$1"
+    if [ -z "$CONTAINER_NAME" ]; then
+        err "CONTAINER_NAME is required"
+        return 1
+    fi
+    local CONTAINER_ID
+    CONTAINER_ID=$(docker ps -aq --filter name="$CONTAINER_NAME" --format "{{.Names}}" | tr -d '\n')
+    if [ "$CONTAINER_ID" != "$CONTAINER_NAME" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# Function to check if a docker volume exists
+function __docker_volume_exists() {
+    local VOLUME_NAME="$1"
+    if [ -z "$VOLUME_NAME" ]; then
+        err "VOLUME_NAME is required"
+        return 1
+    fi
+    local VOLUME_ID
+    VOLUME_ID=$(docker volume ls -q --filter name="$VOLUME_NAME" --format "{{.Name}}" | tr -d '\n')
+    if [ "$VOLUME_ID" != "$VOLUME_NAME" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This function checks if a docker service exists
+function __docker_service_exists() {
+    local SERVICE_NAME="$1"
+    if [ -z "$SERVICE_NAME" ]; then
+        err "SERVICE_NAME is required"
+        return 1
+    fi
+    local NODE_ID
+    NODE_ID=$(docker info --format '{{.Swarm.NodeID}}')
+    if [ -z "$NODE_ID" ]; then
+        return 1
+    fi
+    local SERVICE_ID
+    SERVICE_ID=$(docker service ls -q --filter name="$SERVICE_NAME" --format "{{.Name}}" | tr -d '\n')
+    if [ "$SERVICE_ID" != "$SERVICE_NAME" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This function checks if a Docker stack exists.
+function __docker_stack_exists() {
+    local STACK_NAME="$1"
+    if [ -z "$STACK_NAME" ]; then
+        err "STACK_NAME is required"
+        return 1
+    fi
+    local STACK_ID
+    STACK_ID=$(docker stack ls --format "{{.Name}}" | tr -d '\n')
+    if [ "$STACK_ID" != "$STACK_NAME" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This function checks if a Docker image exists
+function __docker_image_exists() {
+    local IMAGE_NAME="$1"
+    if [ -z "$IMAGE_NAME" ]; then
+        err "IMAGE_NAME is required"
+        return 1
+    fi
+    shift 1 || true
+    # Image tag is optional, or can include the tag in the first argument with a colon
+    local IMAGE_TAG
+    if [ $# -eq 0 ]; then
+        local IMAGE_NAME_PARTS
+        IFS=':' read -r -a IMAGE_NAME_PARTS <<<"$IMAGE_NAME"
+        if [ " ${#IMAGE_NAME_PARTS[@]}" -ne 1 ]; then
+            IMAGE_TAG="${IMAGE_NAME_PARTS[1]}"
+        fi
+    else
+        IMAGE_TAG="$1"
+    fi
+    shift 1 || true
+    if [ -z "$IMAGE_TAG" ]; then
+        warn "No image tag provided, using 'latest'"
+        IMAGE_TAG="latest"
+    fi
+    local IMAGE_ID
+    IMAGE_ID=$(docker images --filter reference="${IMAGE_NAME}:${IMAGE_TAG}" --format "{{.Repository}}:{{.Tag}}" | tr -d '\n')
+    local IMAGE_ID_PARTS
+    IFS=':' read -r -a IMAGE_ID_PARTS <<<"$IMAGE_ID"
+    if [ "${IMAGE_ID_PARTS[1]}" == "<none>" ]; then
+        IMAGE_ID_PARTS[1]="latest"
+    fi
+    debug "IMAGE_ID: ${IMAGE_ID_PARTS[*]}"
+    if [ "${IMAGE_ID_PARTS[0]}" != "${IMAGE_NAME}" ] || [ "${IMAGE_ID_PARTS[1]}" != "${IMAGE_TAG}" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# This function creates a Docker Swarm.
+function docker_swarm_init() {
+    if ! __is_docker_swarm_initialized; then
+        info "Initializing Docker Swarm mode: $(hostname) @ ${IP_ADDRESS}..."
+        local IP_ADDRESS
+        IP_ADDRESS=$(hostname -I | cut -d' ' -f1)
+        debug "IP_ADDRESS: $IP_ADDRESS"
+        __run docker swarm init \
+            --advertise-addr "$IP_ADDRESS" || {
+            err "Failed to initialize Docker Swarm mode."
+            return 1
+        }
+        success "Docker Swarm mode initialized successfully."
+        return 0
+    else
+        warn "Docker Swarm mode is already initialized."
+        return 0
+    fi
+}
+
+# This function leaves a Docker Swarm.
+function docker_swarm_leave() {
+    if __is_docker_swarm_initialized; then
+        info "Leaving Docker Swarm mode..."
+        __run docker swarm leave --force || {
+            err "Failed to leave Docker Swarm mode."
+            return 1
+        }
+        success "Docker Swarm mode left successfully."
+        return 0
+    else
+        warn "Docker Swarm mode is not initialized, not leaving swarm."
+        return 0
+    fi
+}
+
+# This function deploys a Docker Stack to the Swarm
+function docker_stack_deploy() {
+    local FARGS=($*)
+    if [ ${#FARGS[@]} -lt 1 ]; then
+        err "STACK_NAME is required as the last argument"
+        return 1
+    fi
+    local STACK_NAME="${FARGS[-1]}"
+    if ! __is_docker_swarm_initialized; then
+        err "Docker Swarm mode is not initialized."
+        return 1
+    fi
+    if ! __docker_stack_exists "$STACK_NAME"; then
+        info "Deploying stack: $STACK_NAME..."
+        __run docker stack deploy ${FARGS[@]} || {
+            err "Failed to deploy stack: $STACK_NAME"
+            return 1
+        }
+    else
+        warn "Manager stack: $STACK_NAME already exists."
+        return 0
+    fi
+    success "Docker Swarm initialization is complete."
+    return 0
+}
+
+# This function tears down a Docker Stack
+function docker_stack_down() {
+    local FARGS=($*)
+    if [ ${#FARGS[@]} -lt 1 ]; then
+        err "STACK_NAME is required as the last argument"
+        return 1
+    fi
+    local STACK_NAME="${FARGS[-1]}"
+    if ! __is_docker_swarm_initialized; then
+        warn "Docker Swarm mode is not initialized, not bringing down stack: $STACK_NAME."
+        return 1
+    fi
+    if __docker_stack_exists "$STACK_NAME"; then
+        info "Removing stack: $STACK_NAME..."
+        __run docker stack rm ${FARGS[@]} || {
+            err "Failed to remove stack: $STACK_NAME"
+            return 1
+        }
+    else
+        warn "Stack: $STACK_NAME does not exist."
+        return 0
+    fi
+    success "Docker Stack removal is complete."
+    return 0
+}
+
+# This function brings up a docker network
+function docker_network_up() {
+    local FARGS=($*)
+    local NETWORK_NAME="${FARGS[-1]}"
+    if ! __docker_network_exists "$NETWORK_NAME"; then
+        info "Creating network: $NETWORK_NAME..."
+        __run docker network create ${FARGS[@]} || {
+                err "Failed to create network: $NETWORK_NAME"
+                return 1
+            }
+        success "Network: $NETWORK_NAME created successfully."
+        return 0
+    else
+        warn "Network: $NETWORK_NAME already exists."
+        return 0
+    fi
+}
+
+# This function tears down a docker network
+function docker_network_down() {
+    local NETWORK_NAME="$1"
+    if [ -z "$NETWORK_NAME" ]; then
+        err "NETWORK_NAME is required"
+        return 1
+    fi
+    debug "NETWORK_NAME: $NETWORK_NAME"
+    if __docker_network_exists "$NETWORK_NAME"; then
+        local _endpointNames=()
+        mapfile -t _endpointNames < <(docker network inspect "$_network" --format="{{range .Containers}}{{.Name}} {{end}}" | sed 's/ /\n/g')
+        for _endpointName in "${_endpointNames[@]}"; do
+            if [ -z "$_endpointName" ]; then
+            continue
+            fi
+            info "Disconnecting network: $_network from endpoint: $_endpointName..."
+            __run docker network disconnect --force "$_network" "$_endpointName" || {
+            err "Failed to disconnect network: $_network from endpoint: $_endpointName"
+            return 1
+            }
+        done
+        info "Removing network: $_network..."
+        __run docker network rm "$_network" || {
+            if __docker_network_exists "$NETWORK_NAME"; then
+                err "Failed to remove network: $_network"
+                return 1
+            else
+                success "Network: $_network does not exist.  It went down successfully."
+                return 0
+            fi
+        }
+    else
+        warn "Network: $NETWORK_NAME does not exist."
+        return 0
+    fi
+    success "Network: $NETWORK_NAME went down successfully."
+    return 0
+}
+
+# This function tears down all the networks.
+function docker_networks_down() {
+    local FARGS=($*)
+    local _networks=()
+    mapfile -t _networks < <(docker network ls -q ${FARGS[*]} --format="{{.Name}}")
+    if [ ${#_networks[@]} -eq 0 ]; then
+        warn "No networks found to remove, no action taken."
+        return 0
+    fi
+    local FAILED=0
+    for _network in "${_networks[@]}"; do
+        if [ -z "$_network" ]; then
+            continue
+        fi
+        docker_network_down "$_network" || {
+            FAILED=$((FAILED + 1))
+        }
+    done
+    if [ $FAILED -gt 0 ]; then
+        err "Failed to remove ${FAILED} network(s)."
+        return 1
+    else
+        success "All networks went down successfully."
+        return 0
+    fi
+}
+
+# This function brings up a Docker service
+function docker_service_up() {
+    local FARGS=($*)
+    if [ ${#FARGS[@]} -lt 1 ]; then
+        err "SERVICE_NAME is required as the last argument"
+        return 1
+    fi
+    local SERVICE_NAME="${FARGS[-1]}"
+    if ! __docker_service_exists "$SERVICE_NAME"; then
+        info "Creating service: $SERVICE_NAME..."
+        __run docker service create ${FARGS[@]} || {
+                err "Failed to create service: $SERVICE_NAME"
+                return 1
+            }
+        success "Service: $SERVICE_NAME created successfully."
+        return 0
+    else
+        warn "Service: $SERVICE_NAME already exists."
+        return 0
+    fi
+}
+
+# This function tears down a Docker service
+function docker_service_down() {
+    local FARGS=($*)
+    if [ ${#FARGS[@]} -lt 1 ]; then
+        err "SERVICE_NAME is required as the last argument"
+        return 1
+    fi
+    local SERVICE_NAME="${FARGS[-1]}"
+    if __docker_service_exists "$SERVICE_NAME"; then
+        info "Removing service: $SERVICE_NAME..."
+        __run docker service rm ${FARGS[@]} || {
+            err "Failed to remove service: $SERVICE_NAME"
+            return 1
+        }
+    else
+        warn "Service: $SERVICE_NAME does not exist."
+        return 0
+    fi
+    success "Service: $SERVICE_NAME went down successfully."
+    return 0
+}
+
+# This function tears down all the docker services
+function docker_services_down() {
+    local FARGS=($*)
+    local _services=()
+    mapfile -t _services < <(docker service ls -q ${FARGS[@]} --format="{{.ID}}")
+    if [ ${#_services[@]} -eq 0 ]; then
+        warn "No services found to remove, no action taken."
+        return 0
+    fi
+    local _failed=0
+    for _service in "${_services[@]}"; do
+        if [ -z "$_service" ]; then
+            continue
+        fi
+        docker_service_down "$_service" || {
+            _failed=$((_failed + 1))
+        }
+    done
+    if [ $_failed -gt 0 ]; then
+        err "Failed to remove ${_failed} service(s)."
+        return 1
+    else
+        success "All services went down successfully."
+        return 0
+    fi
+}
+
+# This function cleans up all the docker volumess on the host
+function docker_volumes_remove() {
+    local FARGS=($*)
+    local _volumes=()
+    mapfile -t _volume < <(docker volume ls -q ${FARGS[@]} --format '{{.Name}}')
+    local _failed=90
+    for _volume in "${_volumes[@]}"; do
+        if [ -z "$_volume" ]; then
+            continue
+        fi
+        info "Removing volume: $_volume..."
+        __run docker volume rm "$_volume" || {
+            err "Failed to remove volume: $_volume"
+            _failed=$((_failed + 1))
+        }
+    done
+    if [ $_failed -gt 0 ]; then
+        err "Failed to remove ${_failed} volume(s)."
+        return 1
+    else
+        success "All volumes went down successfully."
+        return 0
+    fi
+}
+
+# This function cleans up all the docker images on the host
+function docker_images_remove() {
+    local FARGS=($*)
+    local _images=()
+    mapfile -t _images < <(docker image ls -q ${FARGS[@]} --format '{{.ID}}')
+    local _failed=0
+    for _image in "${_images[@]}"; do
+        if [ -z "$_image" ]; then
+            continue
+        fi
+        info "Removing image: $_image..."
+        __run docker rmi "$_image" || {
+            err "Failed to remove image: $_image"
+            _failed=$((_failed + 1))
+        }
+    done
+    if [ $_failed -gt 0 ]; then
+        err "Failed to remove ${_failed} image(s)."
+        return 1
+    else
+        success "All images went down successfully."
+        return 0
+    fi
+}
+
+# This function cleans up all the docker containers on the host
+function docker_containers_remove() {
+    local FARGS=($*)
+    local _containers=()
+    mapfile -t _containers < <(docker container ls -q ${FARGS[@]} --format '{{.ID}}')
+    local _failed=0
+    for _container in "${_containers[@]}"; do
+        if [ -z "$_container" ]; then
+            continue
+        fi
+        info "Removing container: $_container..."
+        __run docker rm "$_container" || {
+            err "Failed to remove container: $_container"
+            _failed=$((_failed + 1))
+        }
+    done
+    if [ $_failed -gt 0 ]; then
+        err "Failed to remove ${_failed} container(s)."
+        return 1
+    else
+        success "All containers went down successfully."
+        return 0
+    fi
+}
+
+# This function prepares the shared docker resources on the host
+function prep_data() {
+    local ROOT_DIR="$1"
+    if [ -z "$ROOT_DIR" ]; then
+        err "ROOT_DIR is required"
+        return 1
+    fi
+    if [[ ! -d "$ROOT_DIR" ]]; then
+        err "ROOT_DIR: $ROOT_DIR does not exist"
+        return 1
+    fi
+    declare -a folders=()
+    local _failed=0
+    readarray -t folders <<<"$(find "${ROOT_DIR}" -type d -print | sort -u)"
+    for folder in "${folders[@]}"; do
+        if [[ -f "$folder/.gitkeep" ]]; then
+            __run sudo rm -f "$folder/.gitkeep" || {
+                err "Failed to clean folder: $folder"
+                _failed=$((_failed + 1))
+            }
+        fi
+    done
+    if [ $_failed -gt 0 ]; then
+        err "Failed to prepare ${_failed} folder(s) in ${ROOT_DIR}."
+        return 1
+    else
+        success "All folders in ${ROOT_DIR} prepared successfully."
+        return 0
+    fi
+}
+
+# This function resets the the state of a given docker resource on the host.
+function reset_data() {
+    local ROOT_DIR="$1"
+    if [ -z "$ROOT_DIR" ]; then
+        err "ROOT_DIR is required"
+        return 1
+    fi
+    declare -a folders=()
+    readarray -t folders <<<"$(find "${ROOT_DIR}" -type d -print | sort -u)"
+    if [[ -d "$ROOT_DIR" ]]; then
+        __run sudo chown -R $USER:$USER "${ROOT_DIR}" || {
+            err "Failed to change ownership of ${ROOT_DIR}"
+            return 1
+        }
+        __run sudo chmod -R 1775 "${ROOT_DIR}" || {
+            err "Failed to change permissions of ${ROOT_DIR}"
+            return 1
+        }
+        __run rm -rf "${ROOT_DIR}" || {
+            err "Failed to remove directory: ${ROOT_DIR}"
+            return 1
+        }
+    fi
+    if [[ ! -d "$ROOT_DIR" ]]; then
+        local _failed=0
+        for folder in "${folders[@]}"; do
+            if [[ ! -d "$folder" ]]; then
+                __run mkdir -p "$folder" || {
+                    err "Failed to create directory: $folder"
+                    _failed=$((_failed + 1))
+                    continue
+                }
+                [[ $_failed -gt 0 ]] && continue
+                __run sudo chown -R $USER:$USER "$folder" || {
+                    err "Failed to change ownership of $folder"
+                    _failed=$((_failed + 1))
+                    continue
+                }
+                [[ $_failed -gt 0 ]] && continue
+                __run sudo chmod -R 1775 "$folder" || {
+                    err "Failed to change permissions of $folder"
+                    _failed=$((_failed + 1))
+                    continue
+                }
+            fi
+            if [[ ! -f "$folder/.gitkeep" ]]; then
+                __run touch "$folder/.gitkeep" || {
+                    err "Failed to create .gitkeep file in $folder"
+                    _failed=$((_failed + 1))
+                    continue
+                }
+            fi
+        done
+        if [ $_failed -gt 0 ]; then
+            err "Failed to reset ${_failed} folder(s) in ${ROOT_DIR}."
+            return 1
+        else
+            success "All folders in ${ROOT_DIR} reset successfully."
+            return 0
+        fi
+    fi
+}
+
+function usage() {
+    local MYACTION="$1"
+    shift 1 || true
+    local MYSUBACTION="$1"
+    shift 1 || true
+    echo "opendevin - A script to manage the OpenDevin project"
+    echo ""
+    echo "Usage: $0 <action> <subaction> [options] [args]"
+    echo ""
+    echo "  Global Options:"
+    echo ""
+    echo "    -h, --help:     Show this help message"
+    echo "    -d, --debug:    Enable debug mode (prints a lot of spam used for debugging purposes"
+    echo "                    use with caution)"
+    echo ""
+    case "$MYACTION" in
+    gen)
+        case "$MYSUBACTION" in
+        build)
+            echo "  Options (used by build action):"
+            echo ""
+            echo "    -w, --workdir:          The working directory to mount in the container"
+            echo "    -l, --language:         The locale language"
+            echo "    -t, --timezone:         The timezone"
+            echo "    -g, --gosu-version:     The gosu version to use"
+            echo ""
+            echo "  NodeJS Options:"
+            echo ""
+            echo "    -m, --nvm-version:      The nvm version to use"
+            echo "    -n, --node-version:     The node version to use (using nvm)"
+            echo "    -y, --yarn-version:     The yarn version to use"
+            echo ""
+            echo "  Python Options:"
+            echo ""
+            echo "    -p, --python-version:   The python version (using pyenv)"
+            echo ""
+            ;;
+        clean)
+            echo "  Options (used by clean action):"
+            echo ""
+            echo "    No arguments yet"
+            echo ""
+            ;;
+        shell)
+            echo "  Options (used by shell action):"
+            echo ""
+            echo "    No arguments yet"
+            echo ""
+            ;;
+        *)
+            echo "  Sub-Actions (required):"
+            echo ""
+            echo "    build:   Build the opendevin stack"
+            echo "    clean    Clean the opendevin stack"
+            echo ""
+            ;;
+        esac
+        ;;
+    manager)
+        case "$MYSUBACTION" in
+        up)
+            echo "  Options (used by up action):"
+            echo ""
+            echo "    No arguments yet"
+            echo ""
+            ;;
+        down)
+            echo "  Options (used by down action):"
+            echo ""
+            echo "    No arguments yet"
+            echo ""
+            ;;
+        *)
+            echo "  Sub-Actions (required):"
+            echo ""
+            echo "    up:   Deploy the opendevin manager stack"
+            echo "    down: Remove the opendevin manager stack"
+            echo ""
+            ;;
+        esac
+        ;;
+    *)
+        echo "  Action (required):"
+        echo ""
+        echo "    gen:         Manage the opendevin stack"
+        echo "    manager:     Manage the opendevin manager stack"
+        echo ""
+        ;;
+    esac
+    echo "  Additional Arguments [args]:"
+    echo ""
+    echo "    Any additional arguments will be passed to the action command."
+    echo ""
+    echo "  For assistance with a specific action, use:"
+    echo ""
+    echo "    $0 <action> --help"
+    exit 0
+}
+
+function parse_args() {
+    if [ $# -eq 0 ]; then
+        usage
+    fi
+    ACTION="$1"
+    shift 1
+    case "$ACTION" in
+    gen)
+        if [ $# -eq 0 ]; then
+            usage gen
+        fi
+        if [[ ! "$1" =~ ^build|clean|shell ]]; then
+            echo "Unknown sub-action: $1"
+            usage gen
+        else
+            SUBACTION="$1"
+            shift 1
+        fi
+        case "$SUBACTION" in
+        build)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage gen build
+                    break
+                    ;;
+                -w | --workdir)
+                    WORKDIR=$2
+                    shift 2
+                    ;;
+                -l | --language)
+                    LANG=$2
+                    shift 2
+                    ;;
+                -t | --timezone)
+                    TIMEZONE=$2
+                    shift 2
+                    ;;
+                -n | --node-version)
+                    NODE_VERSION=$2
+                    shift 2
+                    ;;
+                -g | --gosu-version)
+                    GOSU_VERSION=$2
+                    shift 2
+                    ;;
+                -p | --python-version)
+                    PYTHON_VERSION=$2
+                    shift 2
+                    ;;
+                -m | --nvm-version)
+                    NVM_VERSION=$2
+                    shift 2
+                    ;;
+                -y | --yarn-version)
+                    YARN_VERSION=$2
+                    shift 2
+                    ;;
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
+                    ;;
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        shell)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage gen shell
+                    break
+                    ;;
+                -w | --workdir)
+                    WORKDIR=$2
+                    shift 2
+                    ;;
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
+                    ;;
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        clean)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage gen clean
+                    break
+                    ;;
+                -w | --workdir)
+                    WORKDIR=$2
+                    shift 2
+                    ;;
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
+                    ;;
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        *)
+            usage gen
+            ;;
+        esac
+        ;;
+    manager)
+        if [ $# -eq 0 ]; then
+            usage manager
+        fi
+        if [[ ! "$1" =~ ^up|down ]]; then
+            echo "Unknown sub-action: $1"
+            usage manager
+        else
+            SUBACTION="$1"
+            shift 1
+        fi
+        case "$SUBACTION" in
+        up)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage manager up
+                    break
+                    ;;
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
+                    ;;
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        down)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage manager down
+                    break
+                    ;;
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
+                    ;;
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        *)
+            usage manager
+            ;;
+        esac
+        ;;
+    *)
+        usage
+        ;;
+    esac
+    # Add remaining arguments to BARGS
+    while [ $# -gt 0 ]; do
+        BARGS+=("$1")
+        shift 1
+    done
+}
+
+function __build_arg() {
+    local ARG_NAME="$1"
+    local ARG_VALUE="$2"
+    if [ -n "$ARG_VALUE" ]; then
+        echo "--build-arg ${ARG_NAME}=${ARG_VALUE}"
+    fi
+}
+
+function _env_arg() {
+    local ENV_NAME="$1"
+    local ENV_VALUE="$2"
+    if [ -n "$ENV_VALUE" ]; then
+        echo "--env ${ENV_NAME}=${ENV_VALUE}"
+    fi
+}
+
+function __build_args() {
+    local ARGS=()
+    ARGS+=("$(__build_arg APP_USER ${USER})")
+    ARGS+=("$(__build_arg APP_DIR /app)")
+    ARGS+=("$(__build_arg LANG ${LANG})")
+    ARGS+=("$(__build_arg TZ ${TIMEZONE})")
+    ARGS+=("$(__build_arg GOSU_VERSION ${GOSU_VERSION})")
+    ARGS+=("$(__build_arg NVM_VERSION ${NVM_VERSION})")
+    ARGS+=("$(__build_arg NODE_VERSION ${NODE_VERSION})")
+    ARGS+=("$(__build_arg YARN_VERSION ${YARN_VERSION})")
+    ARGS+=("$(__build_arg PYTHON_VERSION ${PYTHON_VERSION})")
+    echo "${ARGS[@]}"
+}
+
+function _env_args() {
+    local ARGS=()
+    ARGS+=("$(_env_arg LANG ${LANG})")
+    ARGS+=("$(_env_arg TZ ${TIMEZONE})")
+    ARGS+=("$(_env_arg GOSU_VERSION ${GOSU_VERSION})")
+    ARGS+=("$(_env_arg NVM_VERSION ${NVM_VERSION})")
+    ARGS+=("$(_env_arg NODE_VERSION ${NODE_VERSION})")
+    ARGS+=("$(_env_arg YARN_VERSION ${YARN_VERSION})")
+    ARGS+=("$(_env_arg PYTHON_VERSION ${PYTHON_VERSION})")
+    echo "${ARGS[@]}"
+}
+
+function main() {
+    if [ "$DEBUG" = true ]; then
+        export BUILDKIT_PROGRESS=plain
+    fi
+    case $ACTION in
+    gen)
+        case $SUBACTION in
+        build)
+            prep_data
+            docker_network_up \
+                --label=com.docker.stack.namespace="opendevin_net" \
+                --driver=overlay \
+                --subnet=172.20.0.0/16 \
+                --ip-range=172.20.0.0/24 \
+                --gateway=172.20.0.254 \
+                --attachable \
+                opendevin_net || return 1    
+            ;;
+        clean)
+            reset_data
+            docker_network_down "opendevin_net"
+            ;;
+        shell)
+            error "Shell action not implemented yet"
+            ;;
+        *)
+            echo "Unknown sub-action: $SUBACTION"
+            exit 1
+            ;;
+        esac
+        ;;
+    manager)
+        case $SUBACTION in
+        up)
+            docker_swarm_init || return 1
+            docker_network_up \
+                --label=com.docker.stack.namespace="docker_manager" \
+                --driver=overlay \
+                --subnet=172.19.0.0/16 \
+                --ip-range=172.19.0.0/24 \
+                --gateway=172.19.0.254 \
+                --attachable \
+                docker_manager || return 1
+            docker_stack_deploy --compose-file "./docker/bb-stack.manager.yml" "docker_manager"  || return 1
+            ;;
+        down)
+            docker_stack_down "docker_manager"
+            docker_networks_down --filter label=com.docker.stack.namespace=docker_manager
+            docker_swarm_leave
+            ;;
+        *)
+            echo "Unknown sub-action: $SUBACTION"
+            exit 1
+            ;;
+        esac
+        ;;
+    *)
+        echo "Unknown action: $ACTION"
+        exit 1
+        ;;
+    esac
+}
+
+parse_args "$@"
+main || true
