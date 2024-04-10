@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/usr/bin/env bash
-
 shopt -s extglob
 set -Eeo pipefail
 
@@ -25,10 +23,12 @@ CSCRIPT_DIR=$(dirname "$0")
 
 # Function to print a debug message
 function debug() {
-    local C_WHITE="\033[0;37m"
-    local C_BOLD_WHITE="\033[1;37m"
-    local C_RESET="\033[0m"
-    echo -e "${C_BOLD_WHITE}DEBUG: ${C_RESET}${C_WHITE}$1${C_RESET}" >&2
+    if [ "$DEBUG" = true ]; then
+        local C_WHITE="\033[0;37m"
+        local C_BOLD_WHITE="\033[1;37m"
+        local C_RESET="\033[0m"
+        echo -e "${C_BOLD_WHITE}DEBUG: ${C_RESET}${C_WHITE}$1${C_RESET}" >&2
+    fi
 }
 
 # function to print a warning message
@@ -137,7 +137,7 @@ function __docker_container_exists() {
         return 1
     fi
     local CONTAINER_ID
-    CONTAINER_ID=$(docker ps -aq --filter name="$CONTAINER_NAME" --format "{{.Names}}" | tr -d '\n')
+    CONTAINER_ID=$(docker container ps -a --format '{{ .Image }}' | grep -E "^$CONTAINER_NAME$")
     if [ "$CONTAINER_ID" != "$CONTAINER_NAME" ]; then
         return 1
     else
@@ -190,7 +190,8 @@ function __docker_stack_exists() {
         return 1
     fi
     local STACK_ID
-    STACK_ID=$(docker stack ls --format "{{.Name}}" | tr -d '\n')
+    STACK_ID=$(docker stack ls --format "{{.Name}}" | grep -E "^$STACK_NAME$" | tr -d '\n')
+    debug "STACK_ID: $STACK_ID"
     if [ "$STACK_ID" != "$STACK_NAME" ]; then
         return 1
     else
@@ -200,37 +201,16 @@ function __docker_stack_exists() {
 
 # This function checks if a Docker image exists
 function __docker_image_exists() {
-    local IMAGE_NAME="$1"
+    local IMAGE_NAME
+    IMAGE_NAME="$1"
     if [ -z "$IMAGE_NAME" ]; then
         err "IMAGE_NAME is required"
         return 1
     fi
-    shift 1 || true
-    # Image tag is optional, or can include the tag in the first argument with a colon
-    local IMAGE_TAG
-    if [ $# -eq 0 ]; then
-        local IMAGE_NAME_PARTS
-        IFS=':' read -r -a IMAGE_NAME_PARTS <<<"$IMAGE_NAME"
-        if [ " ${#IMAGE_NAME_PARTS[@]}" -ne 1 ]; then
-            IMAGE_TAG="${IMAGE_NAME_PARTS[1]}"
-        fi
-    else
-        IMAGE_TAG="$1"
-    fi
-    shift 1 || true
-    if [ -z "$IMAGE_TAG" ]; then
-        warn "No image tag provided, using 'latest'"
-        IMAGE_TAG="latest"
-    fi
     local IMAGE_ID
-    IMAGE_ID=$(docker images --filter reference="${IMAGE_NAME}:${IMAGE_TAG}" --format "{{.Repository}}:{{.Tag}}" | tr -d '\n')
-    local IMAGE_ID_PARTS
-    IFS=':' read -r -a IMAGE_ID_PARTS <<<"$IMAGE_ID"
-    if [ "${IMAGE_ID_PARTS[1]}" == "<none>" ]; then
-        IMAGE_ID_PARTS[1]="latest"
-    fi
-    debug "IMAGE_ID: ${IMAGE_ID_PARTS[*]}"
-    if [ "${IMAGE_ID_PARTS[0]}" != "${IMAGE_NAME}" ] || [ "${IMAGE_ID_PARTS[1]}" != "${IMAGE_TAG}" ]; then
+    IMAGE_ID=$(docker image ls --filter reference="$IMAGE_NAME" --format "{{.Repository}}:{{.Tag}}" | grep -E "^$IMAGE_NAME")
+    debug "IMAGE_ID: ${IMAGE_ID[*]}"
+    if [ -z "$IMAGE_ID" ]; then
         return 1
     else
         return 0
@@ -673,21 +653,16 @@ function usage() {
             echo "    -w, --workdir:          The working directory to mount in the container"
             echo "    -l, --language:         The locale language"
             echo "    -t, --timezone:         The timezone"
-            echo "    -g, --gosu-version:     The gosu version to use"
-            echo ""
-            echo "  NodeJS Options:"
-            echo ""
-            echo "    -m, --nvm-version:      The nvm version to use"
-            echo "    -n, --node-version:     The node version to use (using nvm)"
-            echo "    -y, --yarn-version:     The yarn version to use"
-            echo ""
-            echo "  Python Options:"
-            echo ""
-            echo "    -p, --python-version:   The python version (using pyenv)"
             echo ""
             ;;
-        clean)
-            echo "  Options (used by clean action):"
+        up)
+            echo "  Options (used by up action):"
+            echo ""
+            echo "   No arguments yet"
+            echo ""
+            ;;
+        down)
+            echo "  Options (used by down action):"
             echo ""
             echo "    No arguments yet"
             echo ""
@@ -701,8 +676,8 @@ function usage() {
         *)
             echo "  Sub-Actions (required):"
             echo ""
-            echo "    build:   Build the opendevin stack"
-            echo "    clean    Clean the opendevin stack"
+            echo "    up:     Bring up the opendevin stack"
+            echo "    down    Bring down the opendevin stack"
             echo ""
             ;;
         esac
@@ -759,7 +734,7 @@ function parse_args() {
         if [ $# -eq 0 ]; then
             usage gen
         fi
-        if [[ ! "$1" =~ ^build|clean|shell ]]; then
+        if [[ ! "$1" =~ ^build|up|down|shell ]]; then
             echo "Unknown sub-action: $1"
             usage gen
         else
@@ -786,24 +761,46 @@ function parse_args() {
                     TIMEZONE=$2
                     shift 2
                     ;;
-                -n | --node-version)
-                    NODE_VERSION=$2
-                    shift 2
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
                     ;;
-                -g | --gosu-version)
-                    GOSU_VERSION=$2
-                    shift 2
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
                     ;;
-                -p | --python-version)
-                    PYTHON_VERSION=$2
-                    shift 2
+                esac
+            done
+            ;;
+        up)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage gen up
+                    break
                     ;;
-                -m | --nvm-version)
-                    NVM_VERSION=$2
-                    shift 2
+                -d | --debug)
+                    DEBUG=true
+                    shift 1
                     ;;
-                -y | --yarn-version)
-                    YARN_VERSION=$2
+                *)
+                    BARGS+=("$1")
+                    shift 1
+                    break
+                    ;;
+                esac
+            done
+            ;;
+        down)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                -h | --help)
+                    usage gen clean
+                    break
+                    ;;
+                -w | --workdir)
+                    WORKDIR=$2
                     shift 2
                     ;;
                 -d | --debug)
@@ -823,29 +820,6 @@ function parse_args() {
                 case "$1" in
                 -h | --help)
                     usage gen shell
-                    break
-                    ;;
-                -w | --workdir)
-                    WORKDIR=$2
-                    shift 2
-                    ;;
-                -d | --debug)
-                    DEBUG=true
-                    shift 1
-                    ;;
-                *)
-                    BARGS+=("$1")
-                    shift 1
-                    break
-                    ;;
-                esac
-            done
-            ;;
-        clean)
-            while [ $# -gt 0 ]; do
-                case "$1" in
-                -h | --help)
-                    usage gen clean
                     break
                     ;;
                 -w | --workdir)
@@ -957,11 +931,6 @@ function __build_args() {
     ARGS+=("$(__build_arg APP_DIR /app)")
     ARGS+=("$(__build_arg LANG ${LANG})")
     ARGS+=("$(__build_arg TZ ${TIMEZONE})")
-    ARGS+=("$(__build_arg GOSU_VERSION ${GOSU_VERSION})")
-    ARGS+=("$(__build_arg NVM_VERSION ${NVM_VERSION})")
-    ARGS+=("$(__build_arg NODE_VERSION ${NODE_VERSION})")
-    ARGS+=("$(__build_arg YARN_VERSION ${YARN_VERSION})")
-    ARGS+=("$(__build_arg PYTHON_VERSION ${PYTHON_VERSION})")
     echo "${ARGS[@]}"
 }
 
@@ -969,11 +938,6 @@ function _env_args() {
     local ARGS=()
     ARGS+=("$(_env_arg LANG ${LANG})")
     ARGS+=("$(_env_arg TZ ${TIMEZONE})")
-    ARGS+=("$(_env_arg GOSU_VERSION ${GOSU_VERSION})")
-    ARGS+=("$(_env_arg NVM_VERSION ${NVM_VERSION})")
-    ARGS+=("$(_env_arg NODE_VERSION ${NODE_VERSION})")
-    ARGS+=("$(_env_arg YARN_VERSION ${YARN_VERSION})")
-    ARGS+=("$(_env_arg PYTHON_VERSION ${PYTHON_VERSION})")
     echo "${ARGS[@]}"
 }
 
@@ -985,22 +949,79 @@ function main() {
     gen)
         case $SUBACTION in
         build)
-            prep_data
+            __run docker container prune -f || true
+            if __docker_image_exists "localhost:5000/opendevin-builder:latest"; then
+                info "Removing old base image from registry..."
+                __run docker image rm "localhost:5000/opendevin-builder:latest" || return 1
+            fi
+            if __docker_image_exists "localhost:5000/opendevin-runtime:latest"; then
+                info "Removing old opendevin runtime image from registry..."
+                __run docker image rm "localhost:5000/opendevin-runtime:latest" || return 1
+            fi
+            info "Pruning old images..."
+            __run docker image prune -f || return 1
+            info "Building base image..."
+            __run docker build \
+                --file "./docker/Dockerfile.builder" \
+                --tag "localhost:5000/opendevin-builder:latest" \
+                --label "com.docker.stack.namespace=opendevin" \
+                $(__build_args) \
+                "./docker" || return 1
+            success "Base image built successfully."
+            info "Building OpenDevin runtime image..."
+            __run docker build \
+                --file "./docker/OpenDevin/Dockerfile.runtime" \
+                --tag "localhost:5000/opendevin-runtime:latest" \
+                --label "com.docker.stack.namespace=opendevin" \
+                $(__build_args) \
+                "./docker/OpenDevin" || return 1
+            success "OpenDevin runtime image built successfully."
             docker_network_up \
-                --label=com.docker.stack.namespace="opendevin_net" \
-                --driver=overlay \
-                --subnet=172.20.0.0/16 \
-                --ip-range=172.20.0.0/24 \
-                --gateway=172.20.0.254 \
-                --attachable \
-                opendevin_net || return 1    
+                 --label=com.docker.stack.namespace="opendevin" \
+                 --driver=overlay \
+                 --subnet=172.20.0.0/16 \
+                 --ip-range=172.20.0.0/24 \
+                 --gateway=172.20.0.254 \
+                 --attachable \
+                 opendevin_net || return 1 
+            info "Executing build in OpenDevin runtime image..."
+            __run docker run -it \
+                --name "opendevin-prod" \
+                --network "opendevin_net" \
+                --volume "/var/run/docker.sock:/var/run/docker.sock" \
+                --label "com.docker.stack.namespace=opendevin" \
+                localhost:5000/opendevin-runtime:latest \
+                build || return 1
+            success "Build executed successfully."
+            info "Committing changes to OpenDevin runtime image..."
+            local CONTAINER_ID
+            CONTAINER_ID=$(docker ps -a --filter name="opendevin-prod" --format "{{.ID}}")
+            debug "CONTAINER_ID: $CONTAINER_ID"
+            __run docker commit "$CONTAINER_ID" "localhost:5000/opendevin-runtime:latest" || return 1
+            __run docker container rm "$CONTAINER_ID" || return 1
+            success "OpenDevin runtime image updated successfully."
             ;;
-        clean)
-            reset_data
-            docker_network_down "opendevin_net"
+        up)
+            prep_data "./docker/data" || return 1
+            docker_stack_deploy --compose-file "./docker/bb-stack.prod.yml" "opendevin" || return 1
+            ;;
+        down)
+            reset_data "./docker/data" || return 1
+            # docker_stack_down "opendevin" || return 1
+            if __docker_container_exists "opendevin-prod"; then
+                __run docker container rm "opendevin-prod" || return 1
+            fi
+            docker_networks_down --filter label=com.docker.stack.namespace=opendevin
             ;;
         shell)
-            error "Shell action not implemented yet"
+            __run docker run \
+                --rm -it \
+                --name "opendevin-shell" \
+                --network "opendevin_net" \
+                --volume "/var/run/docker.sock:/var/run/docker.sock" \
+                --label "com.docker.stack.namespace=opendevin" \
+                "localhost:5000/opendevin-runtime:latest" \
+                shell || return 1
             ;;
         *)
             echo "Unknown sub-action: $SUBACTION"

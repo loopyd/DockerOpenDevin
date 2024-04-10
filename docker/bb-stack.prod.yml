@@ -8,7 +8,7 @@ services:
       replicas: 1
       resources:
         limits:
-          cpus: 4.0
+          cpus: '4.0'
           memory: 2G  
     volumes:
       - type: bind
@@ -21,12 +21,12 @@ services:
       - opendevin_net
     labels:
       - com.docker.stack.namespace=$STACK_NAME
-    image: localhost:5050/opendevin:latest
+    image: localhost:5000/opendevin-runtime:latest
 
 volumes:
   opendevin_data:
     driver: local
-    options:
+    driver_opts:
       type: none
       device: ../data/opendevin
       o: bind

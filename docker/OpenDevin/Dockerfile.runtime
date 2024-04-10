@@ -1,0 +1,42 @@
+FROM localhost:5000/opendevin-builder:latest AS opendevin-runtime
+
+ARG APP_USER
+ARG APP_DIR
+ARG NODE_VERSION
+ARG PYTHON_VERSION
+ARG POETRY_HOME
+
+ENV APP_USER ${APP_USER:-appuser}
+ENV APP_DIR ${APP_DIR:-/app}
+ENV NODE_VERSION ${NODE_VERSION:-21.7.2}
+ENV PYTHON_VERSION ${PYTHON_VERSION:-3.11.7}
+ENV POETRY_HOME=${POETRY_HOME:-/opt/toolchain/poetry}
+
+USER root
+WORKDIR ${APP_DIR}
+
+# Clone OpenDevin repository
+RUN set -eux; \
+    git clone 'https://github.com/OpenDevin/OpenDevin.git' ${APP_DIR}; \
+    chown -R ${APP_USER}:${APP_USER} ${APP_DIR}; \
+    chmod -R 1755 ${APP_DIR}
+
+# Copy entrypoint script
+COPY ./docker-entrypoint.sh /usr/local/bin/
+RUN chown root:root /usr/local/bin/docker-entrypoint.sh; \
+    chmod g=u /usr/local/bin/docker-entrypoint.sh; \
+    ln -s /usr/local/bin/docker-entrypoint.sh /docker-entrypoint.sh
+
+USER ${APP_USER}
+WORKDIR ${APP_DIR}
+SHELL ["/bin/bash", "-i", "-c"]
+RUN source $APP_USER_HOME/.bashrc; \
+    nvm install $NODE_VERSION; \
+    nvm use $NODE_VERSION; \
+    npm install -g npm@latest; \
+    pyenv install $PYTHON_VERSION || true; \
+    pyenv local $PYTHON_VERSION
+
+VOLUME ${APP_DIR}
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["build"]
