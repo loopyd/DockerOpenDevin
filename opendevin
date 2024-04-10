@@ -737,7 +737,6 @@ function parse_args() {
             usage gen
         fi
         if [[ ! "$1" =~ ^build|up|down|shell ]]; then
-            err "Unknown sub-action: $1"
             usage gen
         else
             SUBACTION="$1"
@@ -842,7 +841,6 @@ function parse_args() {
             usage manager
         fi
         if [[ ! "$1" =~ ^up|down ]]; then
-            err "Unknown sub-action: $1"
             usage manager
         else
             SUBACTION="$1"
