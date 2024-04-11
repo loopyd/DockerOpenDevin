@@ -195,8 +195,8 @@ RUN set -eux; \
     usermod -aG node ${APP_USER}; \
     echo "### >>> nvm >>>" | tee -a ${APP_USER_HOME}/.bashrc; \
     echo "export NVM_DIR=$NVM_DIR" | tee -a ${APP_USER_HOME}/.bashrc; \
-    echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"" | tee -a ${APP_USER_HOME}/.bashrc; \
-    echo "[ -s \"\$NVM_DIR/bash_completion\" ] && . \"\$NVM_DIR/bash_completion\"" | tee -a ${APP_USER_HOME}/.bashrc; \
+    echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\" --no-use" | tee -a ${APP_USER_HOME}/.bashrc; \
+    echo "[ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\"" | tee -a ${APP_USER_HOME}/.bashrc; \
     echo "### <<< nvm <<<" | tee -a ${APP_USER_HOME}/.bashrc
 
 # Setup pyenv
@@ -222,8 +222,6 @@ RUN set -eux; \
 ENV PATH $POETRY_HOME/bin:$PATH
 RUN set -eux; \
     mkdir -p ${POETRY_HOME}; \
-    chown -R root:python ${POETRY_HOME}; \
-    chmod -R 1775 ${POETRY_HOME}; \
     pyenv install 3.11.7; \
     pyenv global 3.11.7; \
     curl -sSL https://install.python-poetry.org | python -; \
@@ -234,7 +232,11 @@ RUN set -eux; \
     echo "# >>> poetry >>>" | tee -a $APP_USER_HOME/.bashrc; \
     echo "export POETRY_HOME=$POETRY_HOME" | tee -a $APP_USER_HOME/.bashrc; \
     echo "export PATH=\$POETRY_HOME/bin:\$PATH" | tee -a $APP_USER_HOME/.bashrc; \
-    echo "# <<< poetry <<<" | tee -a $APP_USER_HOME/.bashrc
+    echo "poetry() {" | tee -a $APP_USER_HOME/.bashrc; \
+    echo "  eval \"$POETRY_HOME/bin/poetry \$*\" || return \$?" | tee -a $APP_USER_HOME/.bashrc; \
+    echo "}" | tee -a $APP_USER_HOME/.bashrc; \
+    echo "# <<< poetry <<<" | tee -a $APP_USER_HOME/.bashrc; \
+    poetry config virtualenvs.create false
 
 # Setup rust
 ENV PATH $CARGO_DIR/bin:$PATH
@@ -267,4 +269,15 @@ RUN set -eux; \
     # issue: https://github.com/docker/cli/issues/4807#issuecomment-1903950217 \
     sed -i 's/ulimit -Hn/# ulimit -Hn/g' /etc/init.d/docker; \
     rm -rf /var/cache/apt
+
+# Clean up system
+RUN set -eux; \
+    apt-get autoremove -qyy; \
+    apt-get clean -qyy; \
+    rm -rf /var/lib/apt/lists/*; \
+    rm -rf \ 
+        /tmp/* \
+        /var/tmp/* || true; \
+    find / -type f -name "*.pyc" -exec rm -f {} +; 
+
 

@@ -24,7 +24,7 @@ C_RESET="\033[0m"
 # Function to print a debug message
 function debug() {
     if [ "$DEBUG" = true ]; then
-        echo -e "${C_DARK_WHITE}$(date +"%Y-%m-%d %H:%M:%S")${C_RESET} ${C_WHITE}[${C_RESET}${C_BOLD_WHITE}DEBUG   ${C_RESET}${C_WHITE}]${C_RESET} ${C_WHITE}$1${C_RESET}" >&2
+        echo -e "${C_DARK_WHITE}$(date +"%Y-%m-%d %H:%M:%S")${C_RESET} ${C_WHITE}[${C_RESET}${C_BOLD_WHITE}DEBUG  ${C_RESET}${C_WHITE}]${C_RESET} ${C_WHITE}$1${C_RESET}" >&2
     fi
 }
 
@@ -133,6 +133,7 @@ function __docker_container_exists() {
     fi
     local CONTAINER_ID
     CONTAINER_ID=$(docker container ps -a --format '{{ .Image }}' | grep -E "^$CONTAINER_NAME$")
+    debug "CONTAINER_ID: $CONTAINER_ID"
     if [ "$CONTAINER_ID" != "$CONTAINER_NAME" ]; then
         return 1
     else
@@ -339,16 +340,19 @@ function docker_network_down() {
             return 1
             }
         done
-        info "Removing network: $_network..."
-        __run docker network rm "$_network" || {
-            if __docker_network_exists "$NETWORK_NAME"; then
-                err "Failed to remove network: $_network"
-                return 1
-            else
-                success "Network: $_network does not exist.  It went down successfully."
-                return 0
-            fi
-        }
+        info "Trying to remove network: $_network..."
+        local TIMEOUT=0
+        while __docker_network_exists "$_network" && [ $TIMEOUT -lt 5 ]; do
+            __run docker network rm "$_network" || true
+            sleep 1s
+        done
+        if [ $TIMEOUT -ge 5 ]; then
+            err "Timeout occoured while trying to remove network: $_network"
+            return 1
+        else
+            success "Network: $_network went down successfully."
+            return 0
+        fi
     else
         warn "Network: $NETWORK_NAME does not exist."
         return 0
@@ -530,6 +534,36 @@ function docker_containers_remove() {
     fi
 }
 
+# This function commits changes to a docker image from a container
+function docker_container_commit() {
+    local CONTAINER_NAME="$1"
+    if [ -z "$CONTAINER_NAME" ]; then
+        err "CONTAINER_NAME is required"
+        return 1
+    fi
+    local IMAGE_NAME="$2"
+    if [ -z "$IMAGE_NAME" ]; then
+        err "IMAGE_NAME is required"
+        return 1
+    fi
+    if ! __docker_image_exists "$IMAGE_NAME"; then
+        err "Image: $IMAGE_NAME does not exist."
+        return 1
+    fi
+    local CONTAINER_ID
+    CONTAINER_ID=$(docker container ps -a --filter name="$CONTAINER_NAME" --format "{{.ID}}" | head -n1)
+    debug "CONTAINER_ID: $CONTAINER_ID"
+    if [ -z "$CONTAINER_ID" ]; then
+        err "Container: $CONTAINER_NAME does not exist."
+        return 1
+    fi
+    info "Committing changes from container: $CONTAINER_NAME to image: $IMAGE_NAME..."
+    __run docker commit "$CONTAINER_ID" "$IMAGE_NAME" || return 1
+    __run docker container rm "$CONTAINER_ID" || return 1
+    success "Changes from container: $CONTAINER_NAME committed to image: $IMAGE_NAME successfully."
+    return 0
+}
+
 # This function prepares the shared docker resources on the host
 function prep_data() {
     local ROOT_DIR="$1"
@@ -672,7 +706,7 @@ function usage() {
             echo ""
             ;;
         *)
-            echo -e "  ${C_BOLD_WHITE}Sub-Actions (required)${C_RESET}"
+            echo -e "  ${C_BOLD_WHITE}Sub-Actions${C_RESET}"
             echo ""
             echo "    build     Build the OpenDevin runtime."
             echo "    up        Bring up the OpenDevin Application stack"
@@ -697,7 +731,7 @@ function usage() {
             echo ""
             ;;
         *)
-            echo -e "  ${C_BOLD_WHITE}Sub-Actions (required)${C_RESET}"
+            echo -e "  ${C_BOLD_WHITE}Sub-Actions${C_RESET}"
             echo ""
             echo "    up        Deploy the opendevin manager stack"
             echo "    down      Remove the opendevin manager stack"
@@ -937,9 +971,15 @@ function _env_args() {
     echo "${ARGS[@]}"
 }
 
+function __debug() {
+    if [ "$DEBUG" == true ]; then
+        echo -ne "--debug "
+    fi
+}
+
 # This function is the main entry point for the script
 function main() {
-    if [ "$DEBUG" = true ]; then
+    if [ "$DEBUG" == true ]; then
         export BUILDKIT_PROGRESS=plain
     fi
     case $ACTION in
@@ -947,15 +987,14 @@ function main() {
         case $SUBACTION in
         build)
             __run docker container prune -f || return 1
-            if __docker_image_exists "localhost:5000/opendevin-builder:latest"; then
-                debug "Removing old base image from registry..."
-                __run docker image rm "localhost:5000/opendevin-builder:latest" || return 1
-            fi
-            if __docker_image_exists "localhost:5000/opendevin-runtime:latest"; then
-                debug "Removing old opendevin runtime image from registry..."
-                __run docker image rm "localhost:5000/opendevin-runtime:latest" || return 1
-            fi
-            debug "Pruning old images..."
+            # if __docker_image_exists "localhost:5000/opendevin-builder:latest"; then
+            #     debug "Removing old base image from registry..."
+            #     __run docker image rm "localhost:5000/opendevin-builder:latest" || return 1
+            # fi
+            # if __docker_image_exists "localhost:5000/opendevin-runtime:latest"; then
+            #     debug "Removing old opendevin runtime image from registry..."
+            #     __run docker image rm "localhost:5000/opendevin-runtime:latest" || return 1
+            # fi
             __run docker image prune -f || return 1
             info "Building base image..."
             __run docker build \
@@ -988,15 +1027,9 @@ function main() {
                 --volume "/var/run/docker.sock:/var/run/docker.sock" \
                 --label "com.docker.stack.namespace=opendevin" \
                 localhost:5000/opendevin-runtime:latest \
-                build || return 1
+                build $(__debug) || return 1
             success "Build executed successfully."
-            info "Committing changes to OpenDevin runtime image..."
-            local CONTAINER_ID
-            CONTAINER_ID=$(docker ps -a --filter name="opendevin-prod" --format "{{.ID}}")
-            debug "CONTAINER_ID: $CONTAINER_ID"
-            __run docker commit "$CONTAINER_ID" "localhost:5000/opendevin-runtime:latest" || return 1
-            __run docker container rm "$CONTAINER_ID" || return 1
-            success "OpenDevin runtime image updated successfully."
+            docker_container_commit "opendevin-prod" "localhost:5000/opendevin-runtime:latest" || return 1
             ;;
         up)
             prep_data "./docker/data" || return 1
@@ -1004,21 +1037,23 @@ function main() {
             ;;
         down)
             reset_data "./docker/data" || return 1
-            # docker_stack_down "opendevin" || return 1
-            if __docker_container_exists "opendevin-prod"; then
-                __run docker container rm "opendevin-prod" || return 1
-            fi
+            docker_stack_down "opendevin" || return 1
             docker_networks_down --filter label=com.docker.stack.namespace=opendevin
             ;;
         shell)
+            if __docker_container_exists "opendevin-shell"; then
+                info "Removing old shell container..."
+                __run docker rm -f "opendevin-shell" || return 1
+            fi
             __run docker run \
-                --rm -it \
+                -it \
                 --name "opendevin-shell" \
                 --network "opendevin_net" \
                 --volume "/var/run/docker.sock:/var/run/docker.sock" \
                 --label "com.docker.stack.namespace=opendevin" \
                 "localhost:5000/opendevin-runtime:latest" \
-                shell || return 1
+                shell || true
+            docker_container_commit "opendevin-shell" "localhost:5000/opendevin-runtime:latest" || return 1
             ;;
         *)
             err "Unknown sub-action: $SUBACTION"

@@ -1,34 +1,60 @@
 version: '3'
 
 services:
-  opendevin:
+  opendevin-backend:
+    image: localhost:5000/opendevin-runtime:latest                   
+    command:
+      - run backend --port 3000
     ports:
-      - 8080:8080
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '4.0'
-          memory: 2G  
+      - 3000:3000
+    networks:
+      - opendevin_net
+    labels:
+      - com.docker.stack.namespace=opendevin
     volumes:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
       - type: volume
-        source: opendevin_data
-        target: /data
+        source: opendevin_app
+        target: /app
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+
+  opendevin-frontend:
+    image: localhost:5000/opendevin-runtime:latest
+    command:
+      - run frontend --port 3001
+    ports:
+      - 3001:3001
     networks:
       - opendevin_net
     labels:
-      - com.docker.stack.namespace=$STACK_NAME
-    image: localhost:5000/opendevin-runtime:latest
+      - com.docker.stack.namespace=opendevin
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: volume
+        source: opendevin_app
+        target: /app
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
 volumes:
-  opendevin_data:
+  opendevin_app:
     driver: local
     driver_opts:
       type: none
-      device: ../data/opendevin
+      device: ../data/opendevin/app
       o: bind
 
 networks:

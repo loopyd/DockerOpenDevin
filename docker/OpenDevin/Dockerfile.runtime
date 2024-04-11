@@ -32,11 +32,15 @@ WORKDIR ${APP_DIR}
 SHELL ["/bin/bash", "-i", "-c"]
 RUN source $APP_USER_HOME/.bashrc; \
     nvm install $NODE_VERSION; \
-    nvm use $NODE_VERSION; \
+    nvm alias default $NODE_VERSION; \
+    nvm use default; \
     npm install -g npm@latest; \
     pyenv install $PYTHON_VERSION || true; \
     pyenv local $PYTHON_VERSION
 
+ENV NODE_PATH $NVM_DIR/versions/node/v$NODE_VERSION/lib/node_modules
+ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$NODE_PATH:$PATH
+
 VOLUME ${APP_DIR}
+EXPOSE 3000
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["build"]

@@ -1,13 +1,16 @@
-#!/bin/bash -i
+#!/bin/bash
 
 shopt -s extglob
 set -Eeo pipefail
 
 CSCRIPT_PATH="$(dirname $0)"
 ACTION=""
+SUBACTION=""
 DEBUG=false
 BARGS=()
-WORKDIR="/app"
+WORKDIR=${WORKDIR:-"/app"}
+SERVER_HOST=${SERVER_HOST:-"127.0.0.1"}
+SERVER_PORT=${SERVER_PORT:-"3000"}
 
 # Colors
 C_DARK_WHITE="\033[0;30m"
@@ -65,7 +68,10 @@ function __run() {
 }
 
 function usage() {
-    local ACTION=$1
+    local MYACTION="$1"
+    shift 1 || true
+    local MYSUBACTION="$1"
+    shift 1 || true
     echo -e "${C_BOLD_YELLOW}-----------------------------------------------------------------------------------${C_RESET}"
     echo -e "  ${C_BOLD_WHITE}OpenDevin${C_RESET} - Your superpowered AI coding assistant"
     echo -e "${C_BOLD_YELLOW}-----------------------------------------------------------------------------------${C_RESET}"
@@ -79,7 +85,7 @@ function usage() {
     echo "    --help: Show this help message, and exit"
     echo "    --debug: Enable debug mode"
     echo ""
-    case "$ACTION" in
+    case "$MYACTION" in
         build)
             echo -e "  ${C_BOLD_WHITE}Options${C_RESET}"
             echo ""
@@ -87,10 +93,29 @@ function usage() {
             echo ""
             ;;
         run)
-            echo -e "  ${C_BOLD_WHITE}Options${C_RESET}"
-            echo ""
-            echo "    No options for this action."
-            echo ""
+            case "$MYSUBACTION" in
+                frontend)
+                    echo -e "  ${C_BOLD_WHITE}Options${C_RESET}"
+                    echo ""
+                    echo "    -x, --host: The host (name or IP address) to bind the frontend server to."
+                    echo "    -p, --port: The port (0-65535) to bind the frontend server to."
+                    echo ""
+                    ;;
+                backend)
+                    echo -e "  ${C_BOLD_WHITE}Options${C_RESET}"
+                    echo ""
+                    echo "    -x, --host: The host (name or IP address) to bind the backend server to."
+                    echo "    -p, --port: The port (0-65535) to bind the backend server to."
+                    echo ""
+                    ;;
+                *)
+                    echo -e "  ${C_BOLD_WHITE}Sub Actions${C_RESET}"
+                    echo ""
+                    echo "    frontend: Run the Frontend Application"
+                    echo "    backend: Run the Backend Application"
+                    echo ""
+                    ;;
+            esac
             ;;
         shell)
             echo -e "  ${C_BOLD_WHITE}Options${C_RESET}"
@@ -133,6 +158,10 @@ function parse_args() {
                     -h|--help)
                         usage build
                         ;;
+                    -d|--debug)
+                        DEBUG=true
+                        shift 1
+                        ;;
                     *)
                         BARGS+=("$1")
                         shift 1
@@ -142,19 +171,88 @@ function parse_args() {
             done
             ;;
         run)
-            BARGS=()
-            while [[ $# -gt 0 ]]; do
-                case "$1" in
-                    -h|--help)
-                        usage run
-                        ;;
-                    *)
-                        BARGS+=("$1")
-                        shift 1
-                        break
-                        ;;
-                esac
-            done
+            if [ $# -eq 0 ]; then
+                usage run
+            fi
+            if [[ ! "$1" =~ ^frontend|backend ]]; then
+                usage run
+            else
+                SUBACTION="$1"
+                shift 1
+            fi
+            case "$SUBACTION" in
+                frontend)
+                    BARGS=()
+                    while [[ $# -gt 0 ]]; do
+                        case "$1" in
+                            -h|--help)
+                                usage run frontend
+                                ;;
+                            -x|--host)
+                                SERVER_HOST="$2"
+                                shift 2
+                                ;;
+                            -p|--port)
+                                SERVER_PORT="$2"
+                                if [[ ! "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
+                                    err "Invalid port number: $SERVER_PORT"
+                                    usage run frontend
+                                fi
+                                shift 2
+                                ;;
+                            -d|--debug)
+                                DEBUG=true
+                                shift 1
+                                ;;
+                            *)
+                                BARGS+=("$1")
+                                shift 1
+                                break
+                                ;;
+                        esac
+                    done
+                    if [[ ! "$SERVER_HOST" =~ : ]]; then
+                        SERVER_HOST="${SERVER_HOST}:${SERVER_PORT}"
+                    fi
+                    ;;
+                backend)
+                    BARGS=()
+                    while [[ $# -gt 0 ]]; do
+                        case "$1" in
+                            -h|--help)
+                                usage run backend
+                                ;;
+                            -x|--host)
+                                SERVER_HOST="$2"
+                                shift 2
+                                ;;
+                            -p|--port)
+                                SERVER_PORT="$2"
+                                if [[ ! "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
+                                    err "Invalid port number: $SERVER_PORT"
+                                    usage run frontend
+                                fi
+                                shift 2
+                                ;;
+                            -d|--debug)
+                                DEBUG=true
+                                shift 1
+                                ;;
+                            *)
+                                BARGS+=("$1")
+                                shift 1
+                                break
+                                ;;
+                        esac
+                    done
+                    if [[ ! "$SERVER_HOST" =~ : ]]; then
+                        SERVER_HOST="${SERVER_HOST}:${SERVER_PORT}"
+                    fi
+                    ;;
+                *)
+                    usage run
+                    ;;
+            esac
             ;;
         shell)
             BARGS=()
@@ -166,6 +264,10 @@ function parse_args() {
                     -w|--workdir)
                         WORKDIR="$2"
                         shift 2
+                        ;;
+                    -d|--debug)
+                        DEBUG=true
+                        shift 1
                         ;;
                     *)
                         BARGS+=("$1")
@@ -189,7 +291,6 @@ function parse_args() {
 function main() {
     case "$ACTION" in
         build)
-            . $APP_USER_HOME/.bashrc
             __run cd ${APP_DIR} || {
                 err "Failed to change the working directory to ${APP_DIR}"
                 return 1
@@ -198,22 +299,63 @@ function main() {
                 err "Failed to change the owner of /var/run/docker.sock"
                 return 1
             }
+            __run nvm use default || {
+                err "Failed to use the default Node.js version"
+                return 1
+            }
             __run make build || {
                 err "Failed to build the Application"
                 return 1
             }
+            success "Successfully built the Application"
+            return 0
             ;;
         run)
-            exec python3 -m opendevin ${BARGS[@]}
+            case "$SUBACTION" in
+                frontend)
+                    __run cd ${APP_DIR}/frontend || {
+                        err "Failed to change the working directory to ${APP_DIR}/frontend"
+                        return 1
+                    }
+                    __run BACKEND_HOST=${SERVER_HOST} FRONTEND_PORT=${SERVER_PORT} npm run start -- --host || {
+                        err "Failed to run the Frontend Application"
+                        return 1
+                    }
+                    ;;
+                backend)
+                    __run cd ${APP_DIR} || {
+                        err "Failed to change the working directory to ${APP_DIR}"
+                        return 1
+                    }
+                    __run poetry run uvicorn opendevin.server.listen:app --port ${SERVER_PORT} || {
+                        err "Failed to run the Backend Application"
+                        return 1
+                    }
+                    ;;
+                *)
+                    usage run
+                    ;;
+            esac
             ;;
         shell)
-            exec /bin/bash -i -c ${BARGS[@]}
+            exec /bin/bash -i ${BARGS[@]}
             ;;
         *)
             usage
             ;;
     esac
 }
+
+if [[ $(id -un) != "$APP_USER" || $- != *i* ]]; then
+    warn "Switching to ${APP_USER}'s environment"
+    exec sudo -EH -u $APP_USER /bin/bash -i -l "$0" "$@"
+else
+    info "Running as Application user: $USER"
+fi
+if [ ! -s /home/${USER}/.bashrc ]; then
+    \. /home/${USER}/.bashrc
+    info "Sourced the .bashrc file"
+fi
 
 parse_args "$@"
 main
