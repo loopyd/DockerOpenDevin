@@ -195,8 +195,8 @@ RUN set -eux; \
     usermod -aG node ${APP_USER}; \
     echo "### >>> nvm >>>" | tee -a ${APP_USER_HOME}/.bashrc; \
     echo "export NVM_DIR=$NVM_DIR" | tee -a ${APP_USER_HOME}/.bashrc; \
-    echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\" --no-use" | tee -a ${APP_USER_HOME}/.bashrc; \
-    echo "[ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\"" | tee -a ${APP_USER_HOME}/.bashrc; \
+    echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\" --no-use" | tee -a ${APP_USER_HOME}/.bashrc; \
+    echo "[ -s \"\$NVM_DIR/bash_completion\" ] && \. \"\$NVM_DIR/bash_completion\"" | tee -a ${APP_USER_HOME}/.bashrc; \
     echo "### <<< nvm <<<" | tee -a ${APP_USER_HOME}/.bashrc
 
 # Setup pyenv
@@ -233,7 +233,7 @@ RUN set -eux; \
     echo "export POETRY_HOME=$POETRY_HOME" | tee -a $APP_USER_HOME/.bashrc; \
     echo "export PATH=\$POETRY_HOME/bin:\$PATH" | tee -a $APP_USER_HOME/.bashrc; \
     echo "poetry() {" | tee -a $APP_USER_HOME/.bashrc; \
-    echo "  eval \"$POETRY_HOME/bin/poetry \$*\" || return \$?" | tee -a $APP_USER_HOME/.bashrc; \
+    echo "  eval \"$POETRY_HOME/bin/poetry --no-ansi \$*\" || return \$?" | tee -a $APP_USER_HOME/.bashrc; \
     echo "}" | tee -a $APP_USER_HOME/.bashrc; \
     echo "# <<< poetry <<<" | tee -a $APP_USER_HOME/.bashrc; \
     poetry config virtualenvs.create false

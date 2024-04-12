@@ -53,6 +53,8 @@ function _exit_trap() {
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
         err "Error: Process exited with status code: $exit_code"
+    else
+        success "$0 exited successfully"
     fi
     cd "$CSCRIPT_PATH"
     exit $exit_code
@@ -61,10 +63,25 @@ function _exit_trap() {
 trap _exit_trap EXIT SIGINT SIGTERM ERR
 
 function __run() {
-    debug "Running command: $*"
-    eval "$*" || {
-        return $?
-    }
+    if [ "$DEBUG" = true ]; then
+        local _env_before
+        _env_before=$(printenv | sort)
+        debug "Running: $*"
+        eval "$*" || {
+            return $?
+        }
+        local _env_after
+        _env_after=$(printenv | sort)
+        local _env_diff
+        _env_diff=$(diff <(echo "$_env_before") <(echo "$_env_after") | grep '^[<>]' | sed 's/^< //;s/^> //')
+        if [[ -n "$_env_diff" ]]; then
+            debug "Environment Changes: $_env_diff"
+        fi
+    else
+        eval "$*" || {
+            return $?
+        }
+    fi
 }
 
 function usage() {
@@ -313,6 +330,18 @@ function main() {
         run)
             case "$SUBACTION" in
                 frontend)
+                    __run cd ${APP_DIR} || {
+                        err "Failed to change the working directory to ${APP_DIR}"
+                        return 1
+                    }
+                    __run nvm use default || {
+                        err "Failed to use the default Node.js version"
+                        return 1
+                    }
+                    __run make build || {
+                        err "Failed to build the Application"
+                        return 1
+                    }
                     __run cd ${APP_DIR}/frontend || {
                         err "Failed to change the working directory to ${APP_DIR}/frontend"
                         return 1
@@ -325,6 +354,14 @@ function main() {
                 backend)
                     __run cd ${APP_DIR} || {
                         err "Failed to change the working directory to ${APP_DIR}"
+                        return 1
+                    }
+                    __run nvm use default || {
+                        err "Failed to use the default Node.js version"
+                        return 1
+                    }
+                    __run make build || {
+                        err "Failed to build the Application"
                         return 1
                     }
                     __run poetry run uvicorn opendevin.server.listen:app --port ${SERVER_PORT} || {
@@ -348,14 +385,13 @@ function main() {
 
 if [[ $(id -un) != "$APP_USER" || $- != *i* ]]; then
     warn "Switching to ${APP_USER}'s environment"
-    exec sudo -EH -u $APP_USER /bin/bash -i -l "$0" "$@"
+    sudo -EH -u $APP_USER /bin/bash -i "$0" "$@" || true
 else
-    info "Running as Application user: $USER"
+    debug "Running as Application user: $USER"
+    if [ -s ${APP_USER_HOME}/.bashrc ]; then
+        . ${APP_USER_HOME}/.bashrc
+        debug "Sourced the .bashrc file"
+    fi
+    parse_args "$@"
+    main 
 fi
-if [ ! -s /home/${USER}/.bashrc ]; then
-    \. /home/${USER}/.bashrc
-    info "Sourced the .bashrc file"
-fi
-
-parse_args "$@"
-main

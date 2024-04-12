@@ -50,14 +50,15 @@ function success() {
     echo -e "${C_DARK_WHITE}$(date +"%Y-%m-%d %H:%M:%S")${C_RESET} ${C_GREEN}[${C_RESET}${C_BOLD_GREEN}SUCCESS${C_RESET}${C_GREEN}]${C_RESET} ${C_GREEN}$1${C_RESET}"
 }
 
-# Function to handle exit traps
 function _exit_trap() {
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
-        err "Process exited with status code: $exit_code"
+        err "Error: Process exited with status code: $exit_code"
+    else
+        success "$0 exited successfully"
     fi
     unset BUILDKIT_PROGRESS
-    cd "$CSCRIPT_DIR"
+    cd "$CSCRIPT_PATH"
     exit $exit_code
 }
 
@@ -65,11 +66,20 @@ trap _exit_trap EXIT SIGINT SIGTERM ERR
 
 # Function to run a command
 function __run() {
-    debug "Running command: $*"
     if [ "$DEBUG" = true ]; then
+        local _env_before
+        _env_before=$(printenv | sort)
+        debug "Running: $*"
         eval "$*" || {
             return $?
         }
+        local _env_after
+        _env_after=$(printenv | sort)
+        local _env_diff
+        _env_diff=$(diff <(echo "$_env_before") <(echo "$_env_after") | grep '^[<>]' | sed 's/^< //;s/^> //')
+        if [[ -n "$_env_diff" ]]; then
+            debug "Environment Changes: $_env_diff"
+        fi
     else
         eval "$* >/dev/null 2>&1" || {
             return $?
@@ -77,6 +87,7 @@ function __run() {
     fi
 }
 
+# Function to safely remove a directory
 function __safe_rmdir() {
     local DIR="$1"
     if [ -d "$DIR" ]; then
@@ -996,6 +1007,14 @@ function main() {
             #     __run docker image rm "localhost:5000/opendevin-runtime:latest" || return 1
             # fi
             __run docker image prune -f || return 1
+            docker_network_up \
+                 --label=com.docker.stack.namespace="opendevin" \
+                 --driver=overlay \
+                 --subnet=172.20.0.0/16 \
+                 --ip-range=172.20.0.0/24 \
+                 --gateway=172.20.0.254 \
+                 --attachable \
+                 opendevin_net || return 1 
             info "Building base image..."
             __run docker build \
                 --file "./docker/Dockerfile.builder" \
@@ -1011,15 +1030,6 @@ function main() {
                 --label "com.docker.stack.namespace=opendevin" \
                 $(__build_args) \
                 "./docker/OpenDevin" || return 1
-            success "OpenDevin runtime image built successfully."
-            docker_network_up \
-                 --label=com.docker.stack.namespace="opendevin" \
-                 --driver=overlay \
-                 --subnet=172.20.0.0/16 \
-                 --ip-range=172.20.0.0/24 \
-                 --gateway=172.20.0.254 \
-                 --attachable \
-                 opendevin_net || return 1 
             info "Executing build in OpenDevin runtime image..."
             __run docker run -it \
                 --name "opendevin-prod" \
@@ -1028,7 +1038,7 @@ function main() {
                 --label "com.docker.stack.namespace=opendevin" \
                 localhost:5000/opendevin-runtime:latest \
                 build $(__debug) || return 1
-            success "Build executed successfully."
+            success "OpenDevin runtime image built successfully."
             docker_container_commit "opendevin-prod" "localhost:5000/opendevin-runtime:latest" || return 1
             ;;
         up)
